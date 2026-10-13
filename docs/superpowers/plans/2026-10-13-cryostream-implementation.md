@@ -10,6 +10,23 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-13-cryostream-design.md` (local-only, gitignored — read it alongside this plan; it is not in git history).
 
+> **Implementation note (added post-execution):** Tasks 1–13's embedded
+> code blocks are the record of what was *planned* and mostly match what
+> was built, but several things changed during execution and during a
+> final-review fix pass — most substantially, the single
+> `aws_iam_role.github_actions` in Tasks 9/10/12/13 became two roles
+> (`github_actions_plan`, read-only, `pull_request`-trusted; and
+> `github_actions_apply`, read-write, `environment:production`-trusted),
+> with two outputs and two GitHub repository variables instead of one.
+> Task 14 below has been corrected to use the real variable names and
+> outputs; the task text above it has not been rewritten to match, to
+> keep the planning record intact. For the authoritative list of every
+> deviation and why, read the implementation ledger at
+> `.superpowers/sdd/2026-10-13-cryostream-implementation/progress.md`
+> (git-ignored scratch — present in the implementation branch's working
+> tree, not merged history) or the commit messages on
+> `implement/cryostream` from `cfc0d9d` onward.
+
 ## Global Constraints
 
 - Terraform ≥1.10 everywhere (required for native S3 backend state locking — no DynamoDB lock table).
@@ -2044,12 +2061,17 @@ terraform apply \
   -var="terraform_state_bucket=<state_bucket_name from Step 1>" \
   -var="aws_region=<your region>"
 ```
-Confirm the SNS email subscription (check your inbox) and note the `github_actions_role_arn`, `api_invoke_url`, and `api_key_id` outputs.
+Confirm the SNS email subscription (check your inbox) and note the
+`github_actions_plan_role_arn`, `github_actions_apply_role_arn`,
+`api_invoke_url`, and `api_key_id` outputs (two separate role ARNs, not
+one — the plan/apply role split was added after this task was originally
+written; see the implementation ledger).
 
 - [ ] **Step 3: Set GitHub repository variables**
 
 ```bash
-gh variable set AWS_GITHUB_ACTIONS_ROLE_ARN --body "<github_actions_role_arn output>"
+gh variable set AWS_GITHUB_ACTIONS_PLAN_ROLE_ARN --body "<github_actions_plan_role_arn output>"
+gh variable set AWS_GITHUB_ACTIONS_APPLY_ROLE_ARN --body "<github_actions_apply_role_arn output>"
 gh variable set AWS_REGION --body "<your region>"
 gh variable set TF_STATE_BUCKET --body "<state_bucket_name from Step 1>"
 gh variable set VIDEO_BUCKET_NAME --body "<your existing video bucket>"
@@ -2074,8 +2096,10 @@ Get your user ID with `gh api user --jq .id`. This is what makes the `apply` and
 curl -X PUT "<api_invoke_url output>/<a real object key in your bucket>" \
   -H "x-api-key: <retrieve with: aws apigateway get-api-key --api-key <api_key_id output> --include-value --query value --output text>" \
   -H "Content-Type: application/json" \
-  -d '{"action": "DELETE", "expiration_at": '"$(date -d '+5 minutes' +%s)"'}'
+  -d '{"action": "DELETE", "expiration_at": '"$(python3 -c 'import time; print(int(time.time()) + 300)')"'}'
 ```
+(Uses `python3` for the +5-minutes epoch timestamp instead of `date -d`,
+which is GNU-only and fails on macOS's BSD `date` — portable either way.)
 Expected: `200` with the created item. Wait for the next sweeper run (up to 15 minutes) and confirm the object is gone and the DynamoDB item's `status` is `DELETED`.
 
 From here on, all further infrastructure changes go through a PR → `plan` workflow → merge to `main` → manually-approved `apply` workflow, per the CI/CD design in Global Constraints.
