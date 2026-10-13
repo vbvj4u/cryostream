@@ -39,11 +39,33 @@ resource "aws_route_table_association" "private" {
 
 # Free (no hourly/per-GB charge), unlike Interface endpoints. This is what
 # lets Lambda reach S3/DynamoDB from private subnets with no NAT Gateway.
+#
+# Each endpoint carries a policy scoped to this stack's own resources only
+# — a Gateway Endpoint with no policy defaults to allowing access to ANY
+# S3 bucket or DynamoDB table reachable through it, not just this
+# project's. The Lambda IAM policies (infra/iam.tf) already restrict this
+# independently; this is a second, defense-in-depth layer so a future
+# widening of those IAM policies can't turn this endpoint into an exit
+# path to unrelated data.
 resource "aws_vpc_endpoint" "s3" {
   vpc_id            = aws_vpc.main.id
   service_name      = "com.amazonaws.${var.aws_region}.s3"
   vpc_endpoint_type = "Gateway"
   route_table_ids   = [aws_route_table.private.id]
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "RestrictToVideoBucket"
+      Effect    = "Allow"
+      Principal = "*"
+      Action    = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+      Resource = [
+        "arn:aws:s3:::${var.video_bucket_name}",
+        "arn:aws:s3:::${var.video_bucket_name}/*"
+      ]
+    }]
+  })
 }
 
 resource "aws_vpc_endpoint" "dynamodb" {
@@ -51,6 +73,20 @@ resource "aws_vpc_endpoint" "dynamodb" {
   service_name      = "com.amazonaws.${var.aws_region}.dynamodb"
   vpc_endpoint_type = "Gateway"
   route_table_ids   = [aws_route_table.private.id]
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "RestrictToVideoExpirationsTable"
+      Effect    = "Allow"
+      Principal = "*"
+      Action    = ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]
+      Resource = [
+        aws_dynamodb_table.video_expirations.arn,
+        "${aws_dynamodb_table.video_expirations.arn}/index/*"
+      ]
+    }]
+  })
 }
 
 resource "aws_security_group" "lambda" {
