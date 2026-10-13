@@ -38,5 +38,16 @@ resource "aws_scheduler_schedule" "sweeper" {
   target {
     arn      = aws_lambda_function.sweeper.arn
     role_arn = aws_iam_role.scheduler.arn
+
+    # Default is up to 185 retries over 24h - wrong in front of a handler
+    # that can legitimately time out mid-copy (reserved_concurrent_executions
+    # = 1 on the sweeper means a retry here would just be throttled anyway).
+    # A throttled or failed run is already covered by the next scheduled
+    # invocation 15 minutes later, so there's nothing useful for Scheduler
+    # itself to retry.
+    retry_policy {
+      maximum_retry_attempts       = 0
+      maximum_event_age_in_seconds = 60
+    }
   }
 }
