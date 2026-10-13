@@ -1,4 +1,5 @@
 import importlib.util
+import logging
 import pathlib
 import time
 
@@ -242,6 +243,22 @@ def test_lambda_handler_continues_past_a_malformed_item_to_later_ones(aws):
     assert result == {"processed": 2}
     later_item = table.get_item(Key={"s3_key": "videos/after-malformed.mp4"})["Item"]
     assert later_item["status"] == "DELETED"
+
+
+def test_record_failure_logs_terminal_failure_with_greppable_marker(aws, caplog):
+    # The sweeper's only CloudWatch alarm watches AWS/Lambda Errors, which
+    # never fires (every exception is caught). A log metric filter is what
+    # actually detects a permanently-failed item, so the terminal
+    # transition must be logged with a marker a metric filter can match.
+    table = aws["table"]
+    _put_item(table, "videos/logme.mp4", "ARCHIVE", attempts=4)
+
+    with caplog.at_level(logging.ERROR):
+        handler.record_failure(table, "videos/logme.mp4", "boom")
+
+    assert any("SWEEPER_ITEM_FAILED_TERMINAL" in r.message for r in caplog.records)
+    item = table.get_item(Key={"s3_key": "videos/logme.mp4"})["Item"]
+    assert item["status"] == "FAILED"
 
 
 def test_process_item_records_failure_and_increments_attempts(aws):

@@ -1,8 +1,12 @@
+import logging
 import os
 import time
 
 import boto3
 from botocore.exceptions import ClientError
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 MAX_ATTEMPTS = 5
 TIME_BUDGET_MS = 10_000  # stop picking up new items once this close to timeout
@@ -115,9 +119,17 @@ def record_failure(table, s3_key, error_message):
             ReturnValues="ALL_NEW",
         )
     except ClientError:
+        logger.error(
+            "could not record failure for key=%s (DynamoDB update_item itself failed): %s",
+            s3_key, error_message,
+        )
         return
 
     attempts = response["Attributes"].get("attempts", 0)
+    logger.warning(
+        "item processing failed: key=%s attempts=%s error=%s", s3_key, attempts, error_message
+    )
+
     if attempts < MAX_ATTEMPTS:
         return
 
@@ -128,6 +140,14 @@ def record_failure(table, s3_key, error_message):
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={":failed": "FAILED", ":pending": "PENDING"},
             ConditionExpression="#s = :pending",
+        )
+        # Greppable marker: infra/observability.tf has a CloudWatch Logs
+        # metric filter matching this exact string, feeding the alarm that
+        # watching AWS/Lambda Errors alone can't provide (every exception
+        # here is caught, so Errors never fires).
+        logger.error(
+            "SWEEPER_ITEM_FAILED_TERMINAL key=%s attempts=%s error=%s",
+            s3_key, attempts, error_message,
         )
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
