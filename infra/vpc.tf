@@ -59,7 +59,7 @@ resource "aws_vpc_endpoint" "s3" {
       Sid       = "RestrictToVideoBucket"
       Effect    = "Allow"
       Principal = "*"
-      Action    = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+      Action    = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload", "s3:ListBucket"]
       Resource = [
         "arn:aws:s3:::${var.video_bucket_name}",
         "arn:aws:s3:::${var.video_bucket_name}/*"

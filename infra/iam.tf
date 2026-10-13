@@ -32,8 +32,19 @@ resource "aws_iam_role_policy" "sweeper" {
       {
         Sid      = "S3Access"
         Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"]
         Resource = "arn:aws:s3:::${var.video_bucket_name}/*"
+      },
+      {
+        # Without this, HeadObject/GetObject on a key that doesn't exist
+        # returns 403 Forbidden instead of 404 - which handle_archive can't
+        # distinguish from "access denied", so a genuinely-missing object
+        # (e.g. deleted out-of-band) gets treated as a real failure instead
+        # of the idempotent-success case it should be.
+        Sid      = "S3ListBucket"
+        Effect   = "Allow"
+        Action   = "s3:ListBucket"
+        Resource = "arn:aws:s3:::${var.video_bucket_name}"
       },
       {
         Sid      = "Logs"

@@ -46,9 +46,15 @@ def iter_due_items(table, gsi_name, now_epoch):
 
 
 def process_item(s3, table, bucket_name, item):
+    # s3_key is the table's partition key, so any item read back from
+    # DynamoDB always has it. action is not guaranteed (e.g. a malformed
+    # bulk-backfill write) - its lookup must stay inside the try, or a
+    # single bad row raises out of process_item and kills the whole
+    # invocation, wedging every later item behind it forever (the next
+    # sweep hits the same row first, in GSI sort order, and dies again).
     s3_key = item["s3_key"]
-    action = item["action"]
     try:
+        action = item["action"]
         if action == "DELETE":
             handle_delete(s3, table, bucket_name, s3_key)
         elif action == "ARCHIVE":
