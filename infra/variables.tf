@@ -26,6 +26,20 @@ variable "github_repository" {
   default     = "vbvj4u/cryostream"
 }
 
+variable "github_oidc_sub_prefix" {
+  description = <<-EOT
+    This repo's GitHub Actions OIDC immutable subject-claim prefix
+    ("repo:<owner>@<ownerId>/<repo>@<repoId>"), used instead of the
+    name-based "repo:owner/repo" form because this repo was created
+    after GitHub's 2026-07-15 cutover to immutable subject claims
+    (verified via `gh api repos/<owner>/<repo>/actions/oidc/customization/sub`,
+    which returned use_immutable_subject=true). Numeric IDs survive repo
+    renames/transfers; names don't.
+  EOT
+  type        = string
+  default     = "repo:vbvj4u@16346491/cryostream@1416401959"
+}
+
 variable "terraform_state_bucket" {
   description = "Name of the S3 bucket holding Terraform state (created by the bootstrap stack)"
   type        = string
