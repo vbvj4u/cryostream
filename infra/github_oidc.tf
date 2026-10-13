@@ -1,11 +1,14 @@
-data "tls_certificate" "github" {
-  url = "https://token.actions.githubusercontent.com/.well-known/openid-configuration"
-}
-
+# thumbprint_list is optional (verified against the installed AWS provider's
+# own docs) and deliberately omitted: AWS no longer validates it for
+# token.actions.githubusercontent.com specifically, so fetching it live via
+# a tls_certificate data source only bought churn - every time GitHub
+# rotates its cert chain, that data source's output changes, forcing a
+# Terraform diff the apply role then can't actually apply (updating it
+# needs iam:UpdateOpenIDConnectProviderThumbprint, which isn't granted,
+# deliberately, since the value does nothing).
 resource "aws_iam_openid_connect_provider" "github" {
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = [data.tls_certificate.github.certificates[0].sha1_fingerprint]
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
 }
 
 # Two separate roles, not one shared by all three workflows: the
@@ -146,6 +149,7 @@ resource "aws_iam_role_policy" "github_actions_apply" {
           "dynamodb:*", "lambda:*", "apigateway:*", "scheduler:*",
           "logs:*", "sns:*", "cloudwatch:*",
           "ec2:DescribeVpcs", "ec2:CreateVpc", "ec2:DeleteVpc", "ec2:ModifyVpcAttribute",
+          "ec2:DescribeVpcAttribute", "ec2:DescribeNetworkAcls",
           "ec2:DescribeSubnets", "ec2:CreateSubnet", "ec2:DeleteSubnet",
           "ec2:DescribeRouteTables", "ec2:CreateRouteTable", "ec2:DeleteRouteTable",
           "ec2:AssociateRouteTable", "ec2:DisassociateRouteTable",
@@ -162,13 +166,15 @@ resource "aws_iam_role_policy" "github_actions_apply" {
         # unscoped iam:CreateRole/PutRolePolicy/PassRole is a privilege
         # escalation path (this role could otherwise create or rewrite
         # the policy of any role in the account, including one with far
-        # broader access than itself).
+        # broader access than itself). AttachRolePolicy/DetachRolePolicy
+        # are needed to manage the plan role's ReadOnlyAccess attachment.
         Sid    = "ManageCryostreamIamRoles"
         Effect = "Allow"
         Action = [
           "iam:GetRole", "iam:CreateRole", "iam:DeleteRole", "iam:PutRolePolicy",
           "iam:DeleteRolePolicy", "iam:GetRolePolicy", "iam:TagRole",
-          "iam:ListRolePolicies", "iam:ListAttachedRolePolicies"
+          "iam:ListRolePolicies", "iam:ListAttachedRolePolicies",
+          "iam:AttachRolePolicy", "iam:DetachRolePolicy"
         ]
         Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/cryostream-*"
       },
@@ -198,7 +204,7 @@ resource "aws_iam_role_policy" "github_actions_apply" {
         Effect = "Deny"
         Action = [
           "iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:DeleteRole",
-          "iam:UpdateAssumeRolePolicy"
+          "iam:UpdateAssumeRolePolicy", "iam:AttachRolePolicy", "iam:DetachRolePolicy"
         ]
         Resource = aws_iam_role.github_actions_apply.arn
       }
