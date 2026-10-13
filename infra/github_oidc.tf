@@ -45,14 +45,58 @@ resource "aws_iam_role_policy" "plan_state_lock" {
 
   # ReadOnlyAccess covers s3:GetObject/ListBucket, but terraform plan still
   # needs to acquire/release the native S3 lock file, which is a write.
+  # Scoped to the exact lock object (Terraform's S3 native locking always
+  # writes to "<state key>.tflock"), not the whole bucket.
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Sid      = "TerraformStateLock"
       Effect   = "Allow"
-      Action   = ["s3:PutObject", "s3:DeleteObject"]
-      Resource = "arn:aws:s3:::${var.terraform_state_bucket}/*"
+      Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+      Resource = "arn:aws:s3:::${var.terraform_state_bucket}/cryostream/terraform.tfstate.tflock"
     }]
+  })
+}
+
+resource "aws_iam_role_policy" "plan_deny_data_reads" {
+  name = "cryostream-github-actions-plan-deny-data-reads"
+  role = aws_iam_role.github_actions_plan.id
+
+  # ReadOnlyAccess grants broad resource *metadata* reads (Describe/List/
+  # Get-config) that `terraform plan` needs across many resource types,
+  # for drift detection, without having to hand-enumerate every action per
+  # service here. But it also grants actions that read resource *contents*
+  # account-wide - s3:GetObject on any bucket (including the real video
+  # bucket's actual video files, not just Terraform-managed buckets),
+  # dynamodb:GetItem/Query/Scan on any table, Secrets Manager and SSM
+  # SecureString values. Plan never needs any of those to compute an
+  # infrastructure diff, so deny them explicitly rather than rely on
+  # ReadOnlyAccess's scope being "good enough" for a PR-triggered role in
+  # a public repo.
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DenyS3DataReadsOutsideStateBucket"
+        Effect = "Deny"
+        Action = ["s3:GetObject", "s3:GetObjectVersion"]
+        NotResource = [
+          "arn:aws:s3:::${var.terraform_state_bucket}/*"
+        ]
+      },
+      {
+        Sid      = "DenyDynamoDbDataReads"
+        Effect   = "Deny"
+        Action   = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:BatchGetItem", "dynamodb:PartiQLSelect"]
+        Resource = "*"
+      },
+      {
+        Sid      = "DenySecretsAndParameterReads"
+        Effect   = "Deny"
+        Action   = ["secretsmanager:GetSecretValue", "ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
+        Resource = "*"
+      }
+    ]
   })
 }
 
