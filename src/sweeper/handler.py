@@ -9,7 +9,13 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 MAX_ATTEMPTS = 5
-TIME_BUDGET_MS = 10_000  # stop picking up new items once this close to timeout
+# Stop picking up new items once this close to the Lambda timeout (300s).
+# 10s was not enough margin for a real S3 copy of a nontrivial video to
+# complete before being killed mid-copy; 120s gives most same-region
+# copies realistic room. This is a fixed heuristic, not a guarantee for
+# arbitrarily large files - see the implementation ledger for why a fully
+# content-length-aware budget wasn't implemented in this pass.
+TIME_BUDGET_MS = 120_000
 
 
 def lambda_handler(event, context):

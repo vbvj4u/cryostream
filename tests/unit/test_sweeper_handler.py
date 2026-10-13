@@ -21,7 +21,7 @@ REGION = "us-east-1"
 
 
 class FakeContext:
-    def __init__(self, remaining_ms=60_000):
+    def __init__(self, remaining_ms=300_000):
         self._remaining_ms = remaining_ms
 
     def get_remaining_time_in_millis(self):
