@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import boto3
+from botocore.exceptions import ClientError
 
 VALID_ACTIONS = {"ARCHIVE", "DELETE"}
 
@@ -40,8 +41,6 @@ def handle_put(table, key, raw_body):
         )
 
     existing = table.get_item(Key={"s3_key": key}).get("Item")
-    if existing and existing.get("status") == "DELETED":
-        return _response(409, {"message": "object already deleted, cannot reschedule"})
 
     now = int(time.time())
     item = {
@@ -53,7 +52,22 @@ def handle_put(table, key, raw_body):
         "updated_at": now,
         "attempts": 0,
     }
-    table.put_item(Item=item)
+    # Conditioned on current state at write time, not the state read above:
+    # the sweeper could delete this object and set status=DELETED in the
+    # gap between the read and this write, and a plain unconditional
+    # put_item would silently resurrect tracking for an object that no
+    # longer exists.
+    try:
+        table.put_item(
+            Item=item,
+            ConditionExpression="attribute_not_exists(s3_key) OR #s <> :deleted",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":deleted": "DELETED"},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return _response(409, {"message": "object already deleted, cannot reschedule"})
+        raise
     return _response(200, item)
 
 

@@ -139,6 +139,58 @@ def test_put_rejects_update_to_deleted_item(table):
     assert response["statusCode"] == 409
 
 
+class _ConcurrentDeleteTable(object):
+    """Wraps a real DynamoDB Table resource. Simulates the sweeper deleting
+    the tracked item (marking it DELETED) in the gap between handle_put's
+    read and its write - proving the write is conditioned on current state
+    at write time, not the state read earlier, not just that a pre-read
+    check happens to catch an already-DELETED item.
+    """
+
+    def __init__(self, real_table, key_to_race):
+        self._real = real_table
+        self._key_to_race = key_to_race
+
+    def put_item(self, **kwargs):
+        if kwargs.get("Item", {}).get("s3_key") == self._key_to_race:
+            self._real.update_item(
+                Key={"s3_key": self._key_to_race},
+                UpdateExpression="SET #s = :deleted",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":deleted": "DELETED"},
+            )
+        return self._real.put_item(**kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_put_rejects_when_item_deleted_concurrently_between_read_and_write(table):
+    table.put_item(
+        Item={
+            "s3_key": "videos/race.mp4",
+            "action": "ARCHIVE",
+            "status": "PENDING",
+            "expiration_at": 1000,
+            "created_at": 1000,
+            "updated_at": 1000,
+            "attempts": 0,
+        }
+    )
+    racy_table = _ConcurrentDeleteTable(table, "videos/race.mp4")
+
+    response = handler.handle_put(
+        racy_table,
+        "videos/race.mp4",
+        json.dumps({"action": "DELETE", "expiration_at": 9999999999}),
+    )
+
+    assert response["statusCode"] == 409
+    item = table.get_item(Key={"s3_key": "videos/race.mp4"})["Item"]
+    assert item["status"] == "DELETED"
+    assert item["action"] == "ARCHIVE"  # untouched by the rejected write
+
+
 def test_get_returns_item_and_serializes_decimal_fields(table):
     table.put_item(
         Item={
