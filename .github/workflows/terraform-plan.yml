@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "infra/**"
+      - "src/**"
       - ".github/workflows/terraform-plan.yml"
 
 permissions:
