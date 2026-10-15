@@ -7,20 +7,24 @@ operational instructions only.
 ## Prerequisites
 
 - AWS credentials for the target account, with enough access to create
-  the bootstrap stack and run the main stack's first apply (Task 14 runs
-  locally, before CI exists).
+  the bootstrap stack (the one thing that's ever applied locally — see
+  below).
 - An existing S3 bucket holding the videos cryostream will manage
   (this stack references it, never creates it).
 - Terraform >= 1.10 (latest stable recommended), `gh` CLI authenticated
   against the target repo, `python3` for test-plan helper commands.
 
-## One-time bootstrap and first deploy
+## One-time bootstrap
 
-This is the only time anything gets applied outside GitHub Actions — it
-has to create the GitHub OIDC-trusting roles before CI can assume them.
-From here on, all further infra changes go through a PR.
+This is the **only** thing that ever gets applied outside GitHub Actions
+— it creates the GitHub OIDC-trusting roles CI needs before CI can
+assume them, and it lives in the `bootstrap` stack specifically because
+that stack is never destroyed (see `CLAUDE.md`'s CI/CD section for why).
+Everything after this section — the first real deploy included — happens
+entirely through PRs and GitHub Actions. You should only ever need to do
+this section once per AWS account, for the life of the project.
 
-### 1. Apply the bootstrap stack (Terraform state bucket)
+### 1. Apply the bootstrap stack
 
 ```bash
 cd bootstrap
@@ -30,37 +34,21 @@ terraform apply \
   -var="aws_region=<your region>"
 ```
 
-Note the `state_bucket_name` output. Skip this step if the bucket from a
-prior bootstrap still exists.
-
-### 2. Apply the main stack locally, once
-
-```bash
-cd infra
-terraform init \
-  -backend-config="bucket=<state_bucket_name from Step 1>" \
-  -backend-config="key=cryostream/terraform.tfstate" \
-  -backend-config="region=<your region>"
-terraform apply \
-  -var="video_bucket_name=<your existing video bucket>" \
-  -var="alert_email=<your email>" \
-  -var="terraform_state_bucket=<state_bucket_name from Step 1>" \
-  -var="aws_region=<your region>"
-```
-
-Confirm the SNS email subscription (check your inbox — it's **pending**
-until you click the confirmation link; alarms are silent until then) and
-note the `github_actions_plan_role_arn`, `github_actions_apply_role_arn`,
-`api_invoke_url`, and `api_key_id` outputs.
+This creates the Terraform state bucket, looks up this account's GitHub
+OIDC provider (or expects one to already exist — see the gotcha below),
+and creates both `cryostream-github-actions-plan` and
+`cryostream-github-actions-apply` IAM roles. Note the `state_bucket_name`,
+`github_actions_plan_role_arn`, and `github_actions_apply_role_arn`
+outputs — you'll need all three for the next step.
 
 **Account-specific gotchas to check before this step, if deploying into
 an AWS account shared with other Terraform-managed projects:**
 
 - **GitHub OIDC provider**: AWS allows only one
   `token.actions.githubusercontent.com` OIDC provider per account. If
-  another project already created one, `infra/github_oidc.tf` looks it
-  up via a `data` source rather than creating it — nothing to do, this
-  is already handled in code. If you see `EntityAlreadyExists` on
+  another project already created one, `bootstrap/github_oidc.tf` looks
+  it up via a `data` source rather than creating it — nothing to do,
+  this is already handled in code. If you see `EntityAlreadyExists` on
   `aws_iam_openid_connect_provider.github`, it means that data-source
   fix regressed; check the resource vs. data block there.
 - **Lambda concurrency quota**: check `aws lambda get-account-settings
@@ -75,23 +63,31 @@ an AWS account shared with other Terraform-managed projects:**
   region>`) and re-add the setting once it clears, to restore the
   structural double-processing guarantee.
 
-### 3. Set GitHub repository variables
+### 2. Set GitHub repository secrets
+
+Stored as **Secrets**, not Variables, so they're never casually visible
+in the repo settings UI (relevant since this is a public repo):
 
 ```bash
-gh variable set AWS_GITHUB_ACTIONS_PLAN_ROLE_ARN --body "<github_actions_plan_role_arn output>"
-gh variable set AWS_GITHUB_ACTIONS_APPLY_ROLE_ARN --body "<github_actions_apply_role_arn output>"
-gh variable set AWS_REGION --body "<your region>"
-gh variable set TF_STATE_BUCKET --body "<state_bucket_name from Step 1>"
-gh variable set VIDEO_BUCKET_NAME --body "<your existing video bucket>"
-gh variable set ALERT_EMAIL --body "<your email>"
+gh secret set AWS_GITHUB_ACTIONS_PLAN_ROLE_ARN --body "<github_actions_plan_role_arn output>"
+gh secret set AWS_GITHUB_ACTIONS_APPLY_ROLE_ARN --body "<github_actions_apply_role_arn output>"
+gh secret set AWS_REGION --body "<your region>"
+gh secret set TF_STATE_BUCKET --body "<state_bucket_name output>"
+gh secret set VIDEO_BUCKET_NAME --body "<your existing video bucket>"
+gh secret set ALERT_EMAIL --body "<your email>"
 ```
 
 If any of these is missing, the `plan`/`apply` workflows fail at the
 `configure-aws-credentials` step with `Input required and not supplied:
-aws-region` (or similar) — that's always a missing-repo-variable symptom,
-not an infra bug.
+aws-region` (or similar) — that's always a missing-secret symptom, not an
+infra bug. Note: GitHub withholds secrets from `pull_request`-triggered
+workflow runs when the PR comes from a fork of this repo (not from a
+branch on the repo itself) — a deliberate GitHub security behavior, not
+a cryostream config issue. It means `plan` will have no AWS access on an
+external contributor's fork PR, which is the safe default for a public
+repo.
 
-### 4. Create the `production` GitHub Environment with required reviewers
+### 3. Create the `production` GitHub Environment with required reviewers
 
 ```bash
 gh api -X PUT repos/<owner>/<repo>/environments/production --input - <<'EOF'
@@ -105,7 +101,33 @@ EOF
 Get your user ID with `gh api user --jq .id`. This is what makes `apply`
 and `destroy` pause for manual approval.
 
-### 5. Verify the registration API end-to-end
+## First deploy (and every deploy after)
+
+With bootstrap done, the main `infra` stack is never applied locally —
+only through CI. Open a PR with any change under `infra/**` or `src/**`
+(even a trivial one, like a comment, if you just want to stand the stack
+up as-is), merge it to `main`, approve the `apply` run when GitHub
+prompts you, and the full 40+ resource stack gets created. This is also
+how you'd redeploy after a `terraform destroy` (see below) — no local
+Terraform commands needed either time.
+
+Confirm the SNS email subscription once it's up (check your inbox — it's
+**pending** until you click the confirmation link; alarms are silent
+until then). To get the `api_invoke_url` and `api_key_id` outputs for the
+verification step below, either read them from the `apply` workflow's
+run log, or run `terraform output` locally against the now-populated
+remote state:
+
+```bash
+cd infra
+terraform init \
+  -backend-config="bucket=<state_bucket_name>" \
+  -backend-config="key=cryostream/terraform.tfstate" \
+  -backend-config="region=<your region>"
+terraform output
+```
+
+### Verify the registration API end-to-end
 
 Upload or pick a real object in the video bucket, then:
 
@@ -167,20 +189,44 @@ through the normal flow: branch → PR → `plan` workflow comments the diff
 approval on the `production` environment. A dedicated `tests.yml` runs
 the pytest suite on any PR touching `src/**`/`tests/**`.
 
-## Tearing down
+## Tearing down (and spinning back up)
 
-To remove everything:
+This is meant to be a repeatable cycle, entirely through CI, with no
+local Terraform commands: run the `Terraform Destroy` workflow
+(`workflow_dispatch`-only — `gh workflow run terraform-destroy.yml -f
+confirm=DESTROY`, or trigger it from the Actions tab), approve it when
+prompted, and the whole `infra` stack (VPC, DynamoDB, both Lambdas, API
+Gateway, alarms, etc. — everything from "First deploy" above) comes
+down. The bootstrap stack, the two GitHub Actions roles, the repo
+secrets, and the `production` environment are all untouched, since they
+live in the separate, persistent `bootstrap` stack — that's the whole
+point of keeping them there. When you want it back, repeat "First
+deploy" above: merge any infra-touching change (or re-push the same one)
+and approve the `apply` run. No re-bootstrap, no re-setting secrets, no
+recreating the environment.
+
+If you'd rather destroy locally instead of through the workflow:
 
 ```bash
 cd infra
+terraform init \
+  -backend-config="bucket=<state_bucket_name>" \
+  -backend-config="key=cryostream/terraform.tfstate" \
+  -backend-config="region=<your region>"
 terraform destroy \
   -var="video_bucket_name=<video bucket>" \
   -var="alert_email=<email>" \
-  -var="terraform_state_bucket=<state bucket>" \
   -var="aws_region=<region>"
 ```
 
-Then, if you also want the bootstrap stack gone:
+This only destroys cryostream's own resources — the video bucket itself
+is never touched by Terraform (it's referenced, not managed), so delete
+it separately if you want it gone too.
+
+To remove the bootstrap stack as well (state bucket + both GitHub Actions
+roles) — only do this if you're done with cryostream in this account for
+good, since it means redoing the one-time bootstrap from scratch next
+time:
 
 ```bash
 cd bootstrap
@@ -189,15 +235,7 @@ terraform destroy \
   -var="aws_region=<region>"
 ```
 
-This only destroys cryostream's own resources — the video bucket itself
-is never touched by Terraform (it's referenced, not managed), so delete
-it separately if you want it gone too. If you also removed the GitHub
-repo variables and the `production` environment, re-running Step 3/4
-above is required before CI can deploy again — a `plan`/`apply` run
-failing with `Input required and not supplied: aws-region` right after a
-teardown is the expected symptom, not a bug.
-
-A `destroy` GitHub Actions workflow also exists
-(`workflow_dispatch`-only, requires typing `DESTROY` to confirm) for
-tearing down the main stack through CI instead of locally — it uses the
-same `apply` role and `production` environment approval gate.
+If you've also deleted the GitHub repo secrets and the `production`
+environment, a `plan`/`apply` run failing with `Input required and not
+supplied: aws-region` right after is the expected missing-secret
+symptom, not a bug — redo the "One-time bootstrap" steps above.

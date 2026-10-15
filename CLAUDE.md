@@ -57,20 +57,29 @@ durable record for anyone who clones the repo fresh.
   ≥1.10, no DynamoDB lock table).
 - **CI/CD**: GitHub Actions via OIDC (no stored AWS keys). The OIDC
   provider itself (`token.actions.githubusercontent.com`) is looked up via
-  a `data` source in `infra/github_oidc.tf`, not created as a `resource`:
-  an AWS account can only have one OIDC provider per URL, so in an account
-  shared with other Terraform-managed projects, whichever deployed first
-  already owns it — creating a second one fails, and importing it into
-  two separate Terraform states would let either project's
-  `terraform destroy` delete it out from under the other. Auth uses **two
-  separate IAM roles**, not one shared role: `cryostream-github-actions-plan`
-  (read-only, trusted only for `pull_request`-triggered runs) and
-  `cryostream-github-actions-apply` (the read-write set, trusted only for
-  `environment:production`-gated runs). `plan` runs on PR; `apply` runs on
-  merge to `main` gated by a required-manual-approval GitHub Environment;
-  `destroy` is a separate `workflow_dispatch`-only workflow requiring a
-  typed confirmation — never automatic. A dedicated `tests.yml` workflow
-  runs the pytest suite on PRs touching `src/**`/`tests/**`.
+  a `data` source, not created as a `resource`: an AWS account can only
+  have one OIDC provider per URL, so in an account shared with other
+  Terraform-managed projects, whichever deployed first already owns it —
+  creating a second one fails, and importing it into two separate
+  Terraform states would let either project's `terraform destroy` delete
+  it out from under the other. Auth uses **two separate IAM roles**, not
+  one shared role: `cryostream-github-actions-plan` (read-only, trusted
+  only for `pull_request`-triggered runs) and `cryostream-github-actions-apply`
+  (the read-write set, trusted only for `environment:production`-gated
+  runs). Both the OIDC data source and both roles live in
+  `bootstrap/github_oidc.tf` — the **persistent** stack, applied once
+  locally, never destroyed — not in `infra/` (the ephemeral stack `plan`/
+  `apply`/`destroy` create and tear down repeatedly). If they lived in
+  `infra/` instead, a `destroy` would delete the very roles CI needs to
+  `apply` again next time, forcing a local re-bootstrap every cycle.
+  `plan` runs on PR; `apply` runs on merge to `main` gated by a
+  required-manual-approval GitHub Environment; `destroy` is a separate
+  `workflow_dispatch`-only workflow requiring a typed confirmation — never
+  automatic. All of `AWS_REGION`/`TF_STATE_BUCKET`/`VIDEO_BUCKET_NAME`/
+  `ALERT_EMAIL`/both role ARNs are stored as GitHub **Secrets** (not
+  Variables), read via `secrets.*` in the workflow files. A dedicated
+  `tests.yml` workflow runs the pytest suite on PRs touching
+  `src/**`/`tests/**`.
 
 ## Repo conventions
 
