@@ -1,3 +1,5 @@
+data "aws_caller_identity" "current" {}
+
 # A data source, not a resource: an IAM OIDC provider is unique per URL per
 # AWS account (AWS rejects a second one for the same URL with
 # EntityAlreadyExists), so in an account shared with other Terraform-managed
@@ -11,6 +13,14 @@ data "aws_iam_openid_connect_provider" "github" {
   arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com"
 }
 
+# Lives in the bootstrap stack, not the main one: these roles are what CI
+# authenticates with to run `terraform plan`/`apply`/`destroy` against the
+# main stack. If they lived in the main stack instead, destroying it would
+# delete the very roles CI needs to deploy it again next time, forcing a
+# local re-bootstrap every cycle. Keeping them here - in the stack that's
+# applied once and never destroyed - means the main stack can be destroyed
+# and recreated indefinitely through CI alone.
+#
 # Two separate roles, not one shared by all three workflows: the
 # pull_request-triggered plan workflow runs against every PR, so it gets a
 # read-only role that can never create/modify/delete anything even if a PR
@@ -56,7 +66,7 @@ resource "aws_iam_role_policy" "plan_state_lock" {
       Sid      = "TerraformStateLock"
       Effect   = "Allow"
       Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
-      Resource = "arn:aws:s3:::${var.terraform_state_bucket}/cryostream/terraform.tfstate.tflock"
+      Resource = "arn:aws:s3:::${var.state_bucket_name}/cryostream/terraform.tfstate.tflock"
     }]
   })
 }
@@ -84,7 +94,7 @@ resource "aws_iam_role_policy" "plan_deny_data_reads" {
         Effect = "Deny"
         Action = ["s3:GetObject", "s3:GetObjectVersion"]
         NotResource = [
-          "arn:aws:s3:::${var.terraform_state_bucket}/*"
+          "arn:aws:s3:::${var.state_bucket_name}/*"
         ]
       },
       {
@@ -128,8 +138,8 @@ resource "aws_iam_role_policy" "github_actions_apply" {
 
   # Broad by necessity: Terraform must manage its own IAM roles/policies as
   # part of this stack, which is an inherent trade-off of Terraform-driven
-  # IAM management (see spec). Scoped to resource types this stack owns,
-  # never AdministratorAccess.
+  # IAM management (see spec). Scoped to resource types the main stack
+  # owns, never AdministratorAccess.
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -138,8 +148,8 @@ resource "aws_iam_role_policy" "github_actions_apply" {
         Effect = "Allow"
         Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"]
         Resource = [
-          "arn:aws:s3:::${var.terraform_state_bucket}",
-          "arn:aws:s3:::${var.terraform_state_bucket}/*"
+          "arn:aws:s3:::${var.state_bucket_name}",
+          "arn:aws:s3:::${var.state_bucket_name}/*"
         ]
       },
       {
@@ -162,7 +172,7 @@ resource "aws_iam_role_policy" "github_actions_apply" {
         Resource = "*"
       },
       {
-        # Scoped to this stack's own role-name prefix, not "*": an
+        # Scoped to the main stack's own role-name prefix, not "*": an
         # unscoped iam:CreateRole/PutRolePolicy/PassRole is a privilege
         # escalation path (this role could otherwise create or rewrite
         # the policy of any role in the account, including one with far
@@ -199,7 +209,10 @@ resource "aws_iam_role_policy" "github_actions_apply" {
         # Explicit deny wins over the Allow above even though this role's
         # own name matches the cryostream-* pattern: without this, the
         # role could rewrite its own inline policy and grant itself
-        # arbitrary further permissions (self-privilege-escalation).
+        # arbitrary further permissions (self-privilege-escalation). Note
+        # this role can no longer touch itself even via a fresh `terraform
+        # apply` of this bootstrap stack, since that only ever runs
+        # locally with the operator's own credentials, never through CI.
         Sid    = "DenySelfModification"
         Effect = "Deny"
         Action = [
