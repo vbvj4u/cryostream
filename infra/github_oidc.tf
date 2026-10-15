@@ -1,14 +1,14 @@
-# thumbprint_list is optional (verified against the installed AWS provider's
-# own docs) and deliberately omitted: AWS no longer validates it for
-# token.actions.githubusercontent.com specifically, so fetching it live via
-# a tls_certificate data source only bought churn - every time GitHub
-# rotates its cert chain, that data source's output changes, forcing a
-# Terraform diff the apply role then can't actually apply (updating it
-# needs iam:UpdateOpenIDConnectProviderThumbprint, which isn't granted,
-# deliberately, since the value does nothing).
-resource "aws_iam_openid_connect_provider" "github" {
-  url            = "https://token.actions.githubusercontent.com"
-  client_id_list = ["sts.amazonaws.com"]
+# A data source, not a resource: an IAM OIDC provider is unique per URL per
+# AWS account (AWS rejects a second one for the same URL with
+# EntityAlreadyExists), so in an account shared with other Terraform-managed
+# projects that also use GitHub Actions OIDC, whichever project deployed
+# first already owns this resource. Creating it here too would either fail
+# outright or, if imported, leave two separate Terraform states both
+# claiming ownership - a future `terraform destroy` in either project could
+# then delete it out from under the other. Looking it up instead means
+# cryostream only ever reads it, never creates or destroys it.
+data "aws_iam_openid_connect_provider" "github" {
+  arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com"
 }
 
 # Two separate roles, not one shared by all three workflows: the
@@ -25,7 +25,7 @@ resource "aws_iam_role" "github_actions_plan" {
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { Federated = aws_iam_openid_connect_provider.github.arn }
+      Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {
@@ -110,7 +110,7 @@ resource "aws_iam_role" "github_actions_apply" {
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { Federated = aws_iam_openid_connect_provider.github.arn }
+      Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {
@@ -193,7 +193,7 @@ resource "aws_iam_role_policy" "github_actions_apply" {
         Sid      = "ReadOidcProvider"
         Effect   = "Allow"
         Action   = "iam:GetOpenIDConnectProvider"
-        Resource = aws_iam_openid_connect_provider.github.arn
+        Resource = data.aws_iam_openid_connect_provider.github.arn
       },
       {
         # Explicit deny wins over the Allow above even though this role's

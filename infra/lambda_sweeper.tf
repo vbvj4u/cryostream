@@ -19,14 +19,19 @@ resource "aws_lambda_function" "sweeper" {
   filename         = data.archive_file.sweeper.output_path
   source_code_hash = data.archive_file.sweeper.output_base64sha256
 
-  # Conditional status updates already make a single item's processing
-  # idempotent across separate (non-overlapping) invocations - but without
-  # this, two truly concurrent invocations could both pass the same item's
-  # HeadObject check and both issue a full S3 copy before either's status
-  # write lands, double-copying large videos and restarting Deep Archive's
-  # 180-day minimum-storage clock. Capping concurrency at 1 makes
-  # overlapping invocations structurally impossible instead of just rare.
-  reserved_concurrent_executions = 1
+  # Deliberately NOT set to 1 right now. Conditional status updates already
+  # make a single item's processing idempotent across separate
+  # (non-overlapping) invocations - but without a concurrency cap, two
+  # truly concurrent invocations could both pass the same item's HeadObject
+  # check and both issue a full S3 copy before either's status write lands,
+  # double-copying large videos and restarting Deep Archive's 180-day
+  # minimum-storage clock. Capping concurrency at 1 would make overlapping
+  # invocations structurally impossible instead of just rare - but this
+  # account's Lambda concurrency quota in this region is currently only 10
+  # (AWS's floor, well below the usual default of 1000), and AWS always
+  # requires >=10 unreserved account-wide, so reserving even 1 for this
+  # function is rejected outright. Re-add `reserved_concurrent_executions =
+  # 1` once the account's quota is raised (see CLAUDE.md).
 
   vpc_config {
     subnet_ids         = aws_subnet.private[*].id
