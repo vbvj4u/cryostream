@@ -86,6 +86,17 @@ durable record for anyone who clones the repo fresh.
 - `main` is branch-protected: no direct pushes/commits, all changes via PR.
 - Stack: Terraform + Python Lambdas.
 - Key assumptions baked into the design (see spec for the full reasoning):
-  the video bucket is pre-existing and referenced, not created, by
-  Terraform; bucket versioning is off; `action` has no default so a delete
-  is always explicit.
+  bucket versioning is off; `action` has no default so a delete is always
+  explicit.
+- **Video bucket lifecycle (changed from the original design)**: the
+  original design assumed the video bucket was pre-existing and merely
+  referenced, never created or destroyed, by Terraform — appropriate for
+  a bucket already holding thousands of real videos. The current
+  deployment instead creates and owns it (`infra/video_bucket.tf`, via
+  `aws_s3_bucket.videos`) with `force_destroy = true`, so the entire
+  stack — test content included — can be spun up and torn down in one
+  `apply`/`destroy` cycle. That means **`terraform destroy` permanently
+  deletes every object in the bucket**, with no recovery (versioning is
+  off). Fine for disposable test videos; if this is ever pointed at real,
+  non-disposable video content, revert to the original
+  pre-existing/referenced-only design instead.

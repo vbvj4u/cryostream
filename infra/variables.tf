@@ -5,7 +5,7 @@ variable "aws_region" {
 }
 
 variable "video_bucket_name" {
-  description = "Name of the pre-existing S3 bucket holding the video files"
+  description = "Globally-unique name for the S3 bucket holding video files; created and destroyed by this stack (see video_bucket.tf)"
   type        = string
 }
 

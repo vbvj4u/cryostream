@@ -9,8 +9,8 @@ operational instructions only.
 - AWS credentials for the target account, with enough access to create
   the bootstrap stack (the one thing that's ever applied locally — see
   below).
-- An existing S3 bucket holding the videos cryostream will manage
-  (this stack references it, never creates it).
+- A globally-unique name to give the video bucket — the `infra` stack
+  creates it for you (see the warning under "Tearing down" below).
 - Terraform >= 1.10 (latest stable recommended), `gh` CLI authenticated
   against the target repo, `python3` for test-plan helper commands.
 
@@ -73,7 +73,7 @@ gh secret set AWS_GITHUB_ACTIONS_PLAN_ROLE_ARN --body "<github_actions_plan_role
 gh secret set AWS_GITHUB_ACTIONS_APPLY_ROLE_ARN --body "<github_actions_apply_role_arn output>"
 gh secret set AWS_REGION --body "<your region>"
 gh secret set TF_STATE_BUCKET --body "<state_bucket_name output>"
-gh secret set VIDEO_BUCKET_NAME --body "<your existing video bucket>"
+gh secret set VIDEO_BUCKET_NAME --body "<name you want the video bucket to have>"
 gh secret set ALERT_EMAIL --body "<your email>"
 ```
 
@@ -129,7 +129,14 @@ terraform output
 
 ### Verify the registration API end-to-end
 
-Upload or pick a real object in the video bucket, then:
+The video bucket starts empty — upload a test object first, then
+register it:
+
+```bash
+aws s3 cp <local file> s3://<video bucket>/<a key, e.g. verify-test.txt>
+```
+
+Then:
 
 ```bash
 curl -X PUT "<api_invoke_url output>/<a real object key>" \
@@ -196,14 +203,22 @@ local Terraform commands: run the `Terraform Destroy` workflow
 (`workflow_dispatch`-only — `gh workflow run terraform-destroy.yml -f
 confirm=DESTROY`, or trigger it from the Actions tab), approve it when
 prompted, and the whole `infra` stack (VPC, DynamoDB, both Lambdas, API
-Gateway, alarms, etc. — everything from "First deploy" above) comes
-down. The bootstrap stack, the two GitHub Actions roles, the repo
-secrets, and the `production` environment are all untouched, since they
-live in the separate, persistent `bootstrap` stack — that's the whole
-point of keeping them there. When you want it back, repeat "First
-deploy" above: merge any infra-touching change (or re-push the same one)
-and approve the `apply` run. No re-bootstrap, no re-setting secrets, no
-recreating the environment.
+Gateway, alarms, **the video bucket itself**, etc. — everything from
+"First deploy" above) comes down. The bootstrap stack, the two GitHub
+Actions roles, the repo secrets, and the `production` environment are
+all untouched, since they live in the separate, persistent `bootstrap`
+stack — that's the whole point of keeping them there. When you want it
+back, repeat "First deploy" above: merge any infra-touching change (or
+re-push the same one) and approve the `apply` run. No re-bootstrap, no
+re-setting secrets, no recreating the environment — just a fresh, empty
+video bucket under the same name.
+
+**The video bucket is created with `force_destroy = true`**, specifically
+so this destroy/redeploy cycle works without first having to empty it by
+hand. That means every object in it is permanently deleted on destroy,
+with no recovery (versioning is off) — fine for disposable test videos,
+not something you want pointed at real video content without revisiting
+that setting first (see `CLAUDE.md`).
 
 If you'd rather destroy locally instead of through the workflow:
 
@@ -219,9 +234,8 @@ terraform destroy \
   -var="aws_region=<region>"
 ```
 
-This only destroys cryostream's own resources — the video bucket itself
-is never touched by Terraform (it's referenced, not managed), so delete
-it separately if you want it gone too.
+This destroys the video bucket along with everything else — see the
+`force_destroy` warning above.
 
 To remove the bootstrap stack as well (state bucket + both GitHub Actions
 roles) — only do this if you're done with cryostream in this account for
