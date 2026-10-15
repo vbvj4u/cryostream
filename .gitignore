@@ -25,4 +25,4 @@ venv/
 
 # Local-only docs - kept on disk, intentionally not tracked in git.
 docs/superpowers/specs/2026-10-13-cryostream-design.md
-CLAUDE.md
+docs/superpowers/plans/
