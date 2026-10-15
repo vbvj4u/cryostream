@@ -10,11 +10,15 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 
+# Terraform build artifacts (Lambda zips)
+infra/.build/
+
 # Python
 __pycache__/
 *.pyc
 .venv/
 venv/
+.pytest_cache/
 
 # OS
 .DS_Store

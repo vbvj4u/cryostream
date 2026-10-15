@@ -1,0 +1,3 @@
+pytest
+moto>=5
+boto3
