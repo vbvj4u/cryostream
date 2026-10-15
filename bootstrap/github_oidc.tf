@@ -167,6 +167,7 @@ resource "aws_iam_role_policy" "github_actions_apply" {
           "ec2:AuthorizeSecurityGroupEgress", "ec2:RevokeSecurityGroupEgress",
           "ec2:DescribeVpcEndpoints", "ec2:CreateVpcEndpoint", "ec2:DeleteVpcEndpoints",
           "ec2:ModifyVpcEndpoint", "ec2:DescribeAvailabilityZones",
+          "ec2:DescribePrefixLists",
           "ec2:CreateTags", "ec2:DeleteTags"
         ]
         Resource = "*"
